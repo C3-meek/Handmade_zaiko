@@ -1,4 +1,4 @@
-<!-- 構造：<!DOCTYPE html>〜</html> まで（head/style → body(header, 接続設定+SQL, タブ, 商品, 材料) → script。画像は Supabase Storage の images バケットに保存） -->
+<!-- 構造：<!DOCTYPE html>〜</html> まで（head/style → body(header, 接続設定+SQL, タブ, 商品, 材料) → script。画像は Supabase Storage の images_zaiko バケットに保存） -->
 <!DOCTYPE html>
 <html lang="ja">
 <head>
@@ -84,12 +84,12 @@ create policy "all materials" on materials for all using (true) with check (true
 create policy "all products" on products for all using (true) with check (true);
 
 -- 画像の保存先（公開バケット）
-insert into storage.buckets (id, name, public) values ('images','images',true)
+insert into storage.buckets (id, name, public) values ('images_zaiko','images_zaiko',true)
   on conflict (id) do nothing;
-drop policy if exists "images read" on storage.objects;
-drop policy if exists "images write" on storage.objects;
-create policy "images read" on storage.objects for select using (bucket_id = 'images');
-create policy "images write" on storage.objects for insert with check (bucket_id = 'images');</pre>
+drop policy if exists "images_zaiko read" on storage.objects;
+drop policy if exists "images_zaiko write" on storage.objects;
+create policy "images_zaiko read" on storage.objects for select using (bucket_id = 'images_zaiko');
+create policy "images_zaiko write" on storage.objects for insert with check (bucket_id = 'images_zaiko');</pre>
     <p class="lead">このSQLは、キーを知っている人なら誰でも読み書き・画像の追加ができる設定です。画像は公開URLになります。個人用の簡易版として使い、公開リポジトリにキーを書き込まないでください（キーはこのブラウザにだけ保存されます）。</p>
   </details>
 </section>
@@ -139,9 +139,9 @@ create policy "images write" on storage.objects for insert with check (bucket_id
     say('画像をアップロード中…');
     try{
       var blob=await shrink(f), path=dir+'/'+Date.now()+'-'+Math.random().toString(36).slice(2,8)+'.jpg';
-      var r=await db.storage.from('images').upload(path,blob,{contentType:'image/jpeg'});
+      var r=await db.storage.from('images_zaiko').upload(path,blob,{contentType:'image/jpeg'});
       if(r.error){say('画像を保存できません：'+r.error.message);return null}
-      say('');return db.storage.from('images').getPublicUrl(path).data.publicUrl;
+      say('');return db.storage.from('images_zaiko').getPublicUrl(path).data.publicUrl;
     }catch(e){say('この画像は読み込めません。別の画像を選んでください。');return null}
   }
   function badge(l){var x=LV[l];return x?'<span class="badge '+x[1]+'">'+x[0]+'</span>':'<span class="badge b-unk">未設定</span>'}
