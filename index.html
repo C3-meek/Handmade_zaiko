@@ -1,0 +1,224 @@
+<!-- 構造：<!DOCTYPE html>〜</html> まで（head/style → body(header, 接続設定+SQL, タブ, 商品, 材料) → script。画像は Supabase Storage の images バケットに保存） -->
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>ハンドメイド在庫帳</title>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.js"></script>
+<style>
+:root{--bg:#f3f1ea;--panel:#fbfaf6;--ink:#222a2e;--sub:#667075;--line:#d9d6ca;--accent:#2f4a5f;--ok:#3f7a4f;--low:#b7791f;--none:#b23b3b;--okbg:#e2efe5;--lowbg:#f7ecd3;--nonebg:#f6dddd}
+@media (prefers-color-scheme:dark){:root{--bg:#161b1e;--panel:#1f2629;--ink:#e6e9ea;--sub:#93a0a5;--line:#34403f;--accent:#8fb3cc;--ok:#7fc096;--low:#e0b45c;--none:#e48a8a;--okbg:#22382a;--lowbg:#3a321c;--nonebg:#402424}}
+*{box-sizing:border-box}
+html{background:var(--bg)}
+body{margin:0;font-family:"Hiragino Sans","Yu Gothic",Meiryo,sans-serif;color:var(--ink);background:var(--bg);line-height:1.6;padding:env(safe-area-inset-top,0) 0 env(safe-area-inset-bottom,0)}
+.wrap{max-width:860px;margin:0 auto;padding:20px 16px 60px}
+h1{font-size:1.5rem;margin:0 0 4px;letter-spacing:.04em;border-left:8px solid var(--accent);padding-left:12px}
+.lead{color:var(--sub);margin:0 0 18px;font-size:.9rem}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:14px;margin-bottom:16px}
+.tabs{display:flex;gap:6px;margin-bottom:12px}
+.tabs button{flex:1;padding:10px;border:1px solid var(--line);background:var(--panel);color:var(--ink);border-radius:6px;font-size:1rem;cursor:pointer}
+.tabs button[aria-selected=true]{background:var(--accent);color:var(--bg);border-color:var(--accent)}
+input,select{font:inherit;padding:8px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--ink);min-width:0}
+button.act{font:inherit;padding:8px 14px;border:0;border-radius:6px;background:var(--accent);color:var(--bg);cursor:pointer}
+button.ghost{font:inherit;padding:4px 10px;border:1px solid var(--line);border-radius:6px;background:transparent;color:var(--sub);cursor:pointer}
+button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.form{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px;align-items:end}
+.form label{font-size:.8rem;color:var(--sub);display:flex;flex-direction:column;gap:2px}
+.item{display:grid;grid-template-columns:72px 1fr auto;align-items:center;gap:8px 12px;padding:12px 0;border-top:1px solid var(--line)}
+.item:first-child{border-top:0}
+.thumb{display:flex;align-items:center;justify-content:center;width:72px;height:72px;border-radius:6px;border:1px dashed var(--line);overflow:hidden;color:var(--sub);font-size:.7rem;text-align:center;cursor:pointer;background:var(--bg)}
+.thumb img{width:100%;height:100%;object-fit:cover;display:block}
+.thumb:focus-within{outline:2px solid var(--accent);outline-offset:2px}
+.code{font-size:.78rem;color:var(--sub);font-variant-numeric:tabular-nums}
+.name{font-weight:700;font-size:1.05rem}
+.qty{display:flex;align-items:center;gap:8px;font-size:1.4rem;font-weight:700;font-variant-numeric:tabular-nums}
+.qty button{width:34px;height:34px;border-radius:50%;border:1px solid var(--line);background:var(--bg);color:var(--ink);font-size:1.1rem;cursor:pointer}
+.mat{grid-column:1/-1;display:flex;flex-wrap:wrap;align-items:center;gap:8px;font-size:.88rem;color:var(--sub)}
+.badge{display:inline-block;padding:1px 10px;border-radius:99px;font-weight:700;font-size:.85rem}
+.b-ok{background:var(--okbg);color:var(--ok)}.b-low{background:var(--lowbg);color:var(--low)}.b-none{background:var(--nonebg);color:var(--none)}.b-unk{background:var(--line);color:var(--sub)}
+.empty{color:var(--sub);padding:16px 0;text-align:center}
+#msg{min-height:1.4em;color:var(--none);font-size:.88rem;margin:6px 0 0}
+pre{overflow-x:auto;background:var(--bg);padding:10px;border-radius:6px;font-size:.78rem;border:1px solid var(--line)}
+details summary{cursor:pointer;color:var(--sub)}
+[hidden]{display:none!important}
+</style>
+</head>
+<body>
+<div class="wrap">
+<h1>ハンドメイド在庫帳</h1>
+<p class="lead">作った商品の数と、元になる材料の残りを一覧で確認できます。</p>
+
+<section class="panel" id="cfgPanel">
+  <div class="form">
+    <label>Supabase の Project URL<input id="cfgUrl" placeholder="https://xxxx.supabase.co" autocomplete="off"></label>
+    <label>anon public キー<input id="cfgKey" placeholder="eyJ..." autocomplete="off"></label>
+    <button class="act" id="cfgSave">接続して保存</button>
+  </div>
+  <p id="msg" role="status"></p>
+  <details><summary>初回のみ（画像機能の追加時も）：Supabase の SQL Editor で実行するSQL</summary>
+<pre id="sql">create table if not exists materials (
+  id bigint generated always as identity primary key,
+  code text not null unique,      -- 管理番号2（材料）
+  name text not null,
+  level text not null default 'ok' check (level in ('ok','low','none')),
+  created_at timestamptz default now()
+);
+create table if not exists products (
+  id bigint generated always as identity primary key,
+  code text not null unique,      -- 管理番号（商品）
+  name text not null,
+  qty int not null default 0,
+  material_id bigint references materials(id) on delete set null,
+  created_at timestamptz default now()
+);
+-- 画像用の列（前回のSQLを実行済みの方もここから実行できます）
+alter table materials add column if not exists image_url text;
+alter table products add column if not exists image_url text;
+
+alter table materials enable row level security;
+alter table products enable row level security;
+drop policy if exists "all materials" on materials;
+drop policy if exists "all products" on products;
+create policy "all materials" on materials for all using (true) with check (true);
+create policy "all products" on products for all using (true) with check (true);
+
+-- 画像の保存先（公開バケット）
+insert into storage.buckets (id, name, public) values ('images','images',true)
+  on conflict (id) do nothing;
+drop policy if exists "images read" on storage.objects;
+drop policy if exists "images write" on storage.objects;
+create policy "images read" on storage.objects for select using (bucket_id = 'images');
+create policy "images write" on storage.objects for insert with check (bucket_id = 'images');</pre>
+    <p class="lead">このSQLは、キーを知っている人なら誰でも読み書き・画像の追加ができる設定です。画像は公開URLになります。個人用の簡易版として使い、公開リポジトリにキーを書き込まないでください（キーはこのブラウザにだけ保存されます）。</p>
+  </details>
+</section>
+
+<div id="app" hidden>
+  <div class="tabs" role="tablist">
+    <button role="tab" id="tabP" aria-selected="true">商品</button>
+    <button role="tab" id="tabM" aria-selected="false">材料</button>
+  </div>
+
+  <section id="viewP">
+    <div class="panel"><div class="form">
+      <label>管理番号<input id="pCode" placeholder="P-001"></label>
+      <label>商品名<input id="pName" placeholder="畳縁コースター"></label>
+      <label>作成数<input id="pQty" type="number" min="0" value="0"></label>
+      <label>主材料<select id="pMat"></select></label>
+      <label>商品画像<input id="pFile" type="file" accept="image/*"></label>
+      <button class="act" id="pAdd">商品を追加</button>
+    </div></div>
+    <div class="panel" id="pList"></div>
+  </section>
+
+  <section id="viewM" hidden>
+    <div class="panel"><div class="form">
+      <label>管理番号2<input id="mCode" placeholder="M-001"></label>
+      <label>材料名<input id="mName" placeholder="畳縁（紺）"></label>
+      <label>残り<select id="mLevel"><option value="ok">有</option><option value="low">僅か</option><option value="none">無</option></select></label>
+      <label>材料画像<input id="mFile" type="file" accept="image/*"></label>
+      <button class="act" id="mAdd">材料を追加</button>
+    </div></div>
+    <div class="panel" id="mList"></div>
+  </section>
+</div>
+</div>
+
+<script>
+(function(){
+  var $=function(i){return document.getElementById(i)};
+  var db=null, mats=[], prods=[];
+  var LV={ok:['有','b-ok'],low:['僅か','b-low'],none:['無','b-none']};
+  function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]})}
+  function say(t){$('msg').textContent=t||''}
+  function store(k,v){try{if(v===undefined)return localStorage.getItem(k);localStorage.setItem(k,v)}catch(e){return null}}
+  function thumb(u,id){return '<label class="thumb" title="タップで画像を変更">'+(u?'<img src="'+esc(u)+'" alt="" loading="lazy">':'画像なし')+'<input type="file" accept="image/*" hidden data-img="'+id+'"></label>'}
+  function shrink(f){return createImageBitmap(f).then(function(b){var r=Math.min(1,800/Math.max(b.width,b.height)),c=document.createElement('canvas');c.width=Math.round(b.width*r);c.height=Math.round(b.height*r);c.getContext('2d').drawImage(b,0,0,c.width,c.height);return new Promise(function(ok){c.toBlob(ok,'image/jpeg',.85)})})}
+  async function up(f,dir){
+    say('画像をアップロード中…');
+    try{
+      var blob=await shrink(f), path=dir+'/'+Date.now()+'-'+Math.random().toString(36).slice(2,8)+'.jpg';
+      var r=await db.storage.from('images').upload(path,blob,{contentType:'image/jpeg'});
+      if(r.error){say('画像を保存できません：'+r.error.message);return null}
+      say('');return db.storage.from('images').getPublicUrl(path).data.publicUrl;
+    }catch(e){say('この画像は読み込めません。別の画像を選んでください。');return null}
+  }
+  function badge(l){var x=LV[l];return x?'<span class="badge '+x[1]+'">'+x[0]+'</span>':'<span class="badge b-unk">未設定</span>'}
+
+  function connect(){
+    var u=$('cfgUrl').value.trim(), k=$('cfgKey').value.trim();
+    if(!u||!k){say('URLとキーを入力してください。');return}
+    try{ db=supabase.createClient(u,k) }catch(e){say('接続設定が正しくありません。');return}
+    store('sb_url',u); store('sb_key',k);
+    load().then(function(ok){ if(ok){ $('app').hidden=false; $('cfgPanel').querySelector('details').open=false } });
+  }
+  async function load(){
+    var a=await db.from('materials').select('*').order('code');
+    var b=await db.from('products').select('*').order('code');
+    if(a.error||b.error){say('読み込めません。SQLを実行済みか、URLとキーを確認してください：'+((a.error||b.error).message));return false}
+    mats=a.data; prods=b.data; say(''); render(); return true;
+  }
+  function render(){
+    $('pMat').innerHTML='<option value="">（なし）</option>'+mats.map(function(m){return '<option value="'+m.id+'">'+esc(m.code)+' '+esc(m.name)+'</option>'}).join('');
+    $('pList').innerHTML=prods.length?prods.map(function(p){
+      var m=mats.find(function(x){return x.id===p.material_id});
+      return '<div class="item">'+thumb(p.image_url,p.id)+'<div><div class="code">'+esc(p.code)+'</div><div class="name">'+esc(p.name)+'</div></div>'+
+        '<div class="qty"><button data-q="-1" data-id="'+p.id+'" aria-label="減らす">−</button><span>'+p.qty+'</span><button data-q="1" data-id="'+p.id+'" aria-label="増やす">＋</button></div>'+
+        '<div class="mat">主材料：'+(m?esc(m.code)+' '+esc(m.name)+' '+badge(m.level):'未設定')+
+        ' <button class="ghost" data-delp="'+p.id+'">削除</button></div></div>';
+    }).join(''):'<div class="empty">商品がまだありません。上のフォームから追加してください。</div>';
+    $('mList').innerHTML=mats.length?mats.map(function(m){
+      var n=prods.filter(function(p){return p.material_id===m.id}).length;
+      return '<div class="item">'+thumb(m.image_url,m.id)+'<div><div class="code">'+esc(m.code)+'</div><div class="name">'+esc(m.name)+'</div></div>'+
+        '<div><select data-lv="'+m.id+'" aria-label="残り">'+Object.keys(LV).map(function(k){return '<option value="'+k+'"'+(m.level===k?' selected':'')+'>'+LV[k][0]+'</option>'}).join('')+'</select></div>'+
+        '<div class="mat">使用中の商品：'+n+'件 <button class="ghost" data-delm="'+m.id+'">削除</button></div></div>';
+    }).join(''):'<div class="empty">材料がまだありません。上のフォームから追加してください。</div>';
+  }
+  async function run(q){var r=await q; if(r.error){say('保存できません：'+r.error.message);return false} return load()}
+
+  $('cfgSave').onclick=connect;
+  $('tabP').onclick=$('tabM').onclick=function(e){
+    var p=e.target.id==='tabP';
+    $('tabP').setAttribute('aria-selected',p);$('tabM').setAttribute('aria-selected',!p);
+    $('viewP').hidden=!p;$('viewM').hidden=p;
+  };
+  $('pAdd').onclick=async function(){
+    var c=$('pCode').value.trim(), n=$('pName').value.trim(), f=$('pFile').files[0], img=null;
+    if(!c||!n){say('管理番号と商品名を入力してください。');return}
+    if(f){img=await up(f,'products'); if(!img)return}
+    var ok=await run(db.from('products').insert({code:c,name:n,qty:parseInt($('pQty').value,10)||0,material_id:$('pMat').value?Number($('pMat').value):null,image_url:img}));
+    if(ok){$('pCode').value='';$('pName').value='';$('pQty').value=0;$('pFile').value=''}
+  };
+  $('mAdd').onclick=async function(){
+    var c=$('mCode').value.trim(), n=$('mName').value.trim(), f=$('mFile').files[0], img=null;
+    if(!c||!n){say('管理番号2と材料名を入力してください。');return}
+    if(f){img=await up(f,'materials'); if(!img)return}
+    var ok=await run(db.from('materials').insert({code:c,name:n,level:$('mLevel').value,image_url:img}));
+    if(ok){$('mCode').value='';$('mName').value='';$('mFile').value=''}
+  };
+  async function swap(e,table,dir){
+    var t=e.target; if(!t.dataset.img||!t.files[0])return;
+    var u=await up(t.files[0],dir); if(u) run(db.from(table).update({image_url:u}).eq('id',t.dataset.img));
+  }
+  $('pList').onchange=function(e){swap(e,'products','products')};
+  $('pList').onclick=function(e){
+    var t=e.target;
+    if(t.dataset.q){var p=prods.find(function(x){return x.id==t.dataset.id});run(db.from('products').update({qty:Math.max(0,p.qty+Number(t.dataset.q))}).eq('id',p.id))}
+    if(t.dataset.delp&&confirm('この商品を削除しますか？')) run(db.from('products').delete().eq('id',t.dataset.delp));
+  };
+  $('mList').onclick=function(e){
+    var t=e.target;
+    if(t.dataset.delm&&confirm('この材料を削除しますか？（商品の主材料は未設定になります）')) run(db.from('materials').delete().eq('id',t.dataset.delm));
+  };
+  $('mList').onchange=function(e){
+    if(e.target.dataset.lv) run(db.from('materials').update({level:e.target.value}).eq('id',e.target.dataset.lv));
+    else swap(e,'materials','materials');
+  };
+
+  var u=store('sb_url'), k=store('sb_key');
+  if(u&&k){$('cfgUrl').value=u;$('cfgKey').value=k;connect()}
+})();
+</script>
+</body>
+</html>
