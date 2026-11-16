@@ -1,4 +1,4 @@
-<!-- 構造：<!DOCTYPE html>〜</html> まで（head/style → body(header, 接続設定+SQL, タブ, 商品, 材料) → script。画像は Supabase Storage の images_zaiko バケットに保存） -->
+<!-- 構造：<!DOCTYPE html>〜</html> まで（head/style → body(header, 設定タブ(接続状態+SQL), タブ, 商品, 材料) → script。接続情報は script 冒頭の SUPABASE_URL / SUPABASE_KEY に記入。画像は Supabase Storage の images_zaiko バケットに保存） -->
 <!DOCTYPE html>
 <html lang="ja">
 <head>
@@ -58,11 +58,9 @@ details summary{cursor:pointer;color:var(--sub)}
 <p id="msg" role="status"></p>
 
 <section class="panel" id="viewS">
-  <div class="form">
-    <label>Supabase の Project URL<input id="cfgUrl" placeholder="https://xxxx.supabase.co" autocomplete="off"></label>
-    <label>anon public キー<input id="cfgKey" placeholder="eyJ..." autocomplete="off"></label>
-    <button class="act" id="cfgSave">接続して保存</button>
-  </div>
+  <p>接続状態：<strong id="cfgState">未接続</strong></p>
+  <p class="lead">接続情報（Project URL と anon public キー）はこのファイルの中に書き込む方式です。入力欄はありません。変更するときは GitHub の <code>index.html</code> を開き、ファイル後半（<code>「接続情報」</code>というコメントの付近）にある <code>SUPABASE_URL</code> と <code>SUPABASE_KEY</code> の2行を編集して保存してください（スマホのブラウザからも編集できます）。</p>
+  <button class="act" id="cfgSave" style="margin-bottom:12px">再接続する</button>
   <details><summary>初回のみ（画像機能の追加時も）：Supabase の SQL Editor で実行するSQL</summary>
 <pre id="sql">create table if not exists materials (
   id bigint generated always as identity primary key,
@@ -129,12 +127,15 @@ create policy "images_zaiko write" on storage.objects for insert with check (buc
 
 <script>
 (function(){
+  // ▼ 「接続情報」（Supabase の Project Settings → API）。ここを書き換えます ▼
+  var SUPABASE_URL='https://gbjydrrcgoovgiuidfxp.supabase.co';
+  var SUPABASE_KEY='sb_publishable_2MaHoX-lcwtbNxBP1eIAzA___zNnRFa';
+  // ▲ ここまで ▲
   var $=function(i){return document.getElementById(i)};
   var db=null, mats=[], prods=[];
   var LV={ok:['有','b-ok'],low:['僅か','b-low'],none:['無','b-none']};
   function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]})}
   function say(t){$('msg').textContent=t||''}
-  function store(k,v){try{if(v===undefined)return localStorage.getItem(k);localStorage.setItem(k,v)}catch(e){return null}}
   function thumb(u,id){return '<label class="thumb" title="タップで画像を変更">'+(u?'<img src="'+esc(u)+'" alt="" loading="lazy">':'画像なし')+'<input type="file" accept="image/*" hidden data-img="'+id+'"></label>'}
   function shrink(f){return createImageBitmap(f).then(function(b){var r=Math.min(1,800/Math.max(b.width,b.height)),c=document.createElement('canvas');c.width=Math.round(b.width*r);c.height=Math.round(b.height*r);c.getContext('2d').drawImage(b,0,0,c.width,c.height);return new Promise(function(ok){c.toBlob(ok,'image/jpeg',.85)})})}
   async function up(f,dir){
@@ -155,14 +156,18 @@ create policy "images_zaiko write" on storage.objects for insert with check (buc
     });
   }
   function connect(){
-    var u=$('cfgUrl').value.trim(), k=$('cfgKey').value.trim();
-    if(!u||!k){say('URLとキーを入力してください。');return}
-    if(!/^https:\/\//.test(u)){say('URLは「https://」で始まる Project URL を入れてください（postgresql:// で始まる接続文字列ではありません）。');return}
-    u=u.replace(/\/+$/,'');
-    try{ db=supabase.createClient(u,k) }catch(e){say('接続設定が正しくありません。');return}
-    store('sb_url',u); store('sb_key',k);
-    load().then(function(ok){ $('tabP').disabled=$('tabM').disabled=!ok; show(ok?'P':'S') });
+    var u=SUPABASE_URL.trim().replace(/\/+$/,''), k=SUPABASE_KEY.trim();
+    $('cfgState').textContent='接続中…';
+    if(!/^https:\/\//.test(u)){fail('SUPABASE_URL が https:// で始まる Project URL になっていません。');return}
+    if(!/^(eyJ|sb_publishable_)/.test(k)){fail('SUPABASE_KEY に anon public キーを貼り付けてください。');return}
+    try{ db=supabase.createClient(u,k) }catch(e){fail('接続設定が正しくありません。');return}
+    load().then(function(ok){
+      $('tabP').disabled=$('tabM').disabled=!ok;
+      $('cfgState').textContent=ok?'接続済み':'接続できません';
+      show(ok?'P':'S');
+    });
   }
+  function fail(t){$('cfgState').textContent='未接続';$('tabP').disabled=$('tabM').disabled=true;show('S');say(t)}
   async function load(){
     var a=await db.from('materials').select('*').order('code');
     var b=await db.from('products').select('*').order('code');
@@ -224,8 +229,7 @@ create policy "images_zaiko write" on storage.objects for insert with check (buc
     else swap(e,'materials','materials');
   };
 
-  var u=store('sb_url'), k=store('sb_key');
-  if(u&&k){$('cfgUrl').value=u;$('cfgKey').value=k;connect()}
+  connect();
 })();
 </script>
 </body>
