@@ -1,4 +1,4 @@
-<!-- 構造：<!DOCTYPE html>〜</html> まで（head/style → body(header, 設定タブ(接続状態+SQL), タブ, 商品, 材料) → script。接続情報は script 冒頭の SUPABASE_URL / SUPABASE_KEY に記入。画像は Supabase Storage の images_zaiko バケットに保存） -->
+<!-- 構造：<!DOCTYPE html>〜</html> まで（head/style → body(header, 設定タブ(接続状態+SQL), タブ, 商品(生産・出荷記録/一覧/履歴/追加), 材料(一覧/追加)) → script。接続情報は script 冒頭の SUPABASE_URL / SUPABASE_KEY に記入。画像は Supabase Storage の images_zaiko バケットに保存） -->
 <!DOCTYPE html>
 <html lang="ja">
 <head>
@@ -42,6 +42,11 @@ button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid 
 #msg{min-height:1.4em;color:var(--none);font-size:.88rem;margin:0 0 10px}
 pre{overflow-x:auto;background:var(--bg);padding:10px;border-radius:6px;font-size:.78rem;border:1px solid var(--line)}
 details summary{cursor:pointer;color:var(--sub)}
+.mv{display:grid;grid-template-columns:86px 1fr auto auto;gap:8px;align-items:center;padding:8px 0;border-top:1px solid var(--line);font-size:.9rem}
+.mv:first-child{border-top:0}
+details.panel>summary{cursor:pointer;font-weight:700;color:var(--accent)}
+details.panel[open]>summary{margin-bottom:10px}
+#vHint{min-height:1.3em;margin:8px 0 0}
 [hidden]{display:none!important}
 </style>
 </head>
@@ -61,7 +66,7 @@ details summary{cursor:pointer;color:var(--sub)}
   <p>接続状態：<strong id="cfgState">未接続</strong></p>
   <p class="lead">接続情報（Project URL と anon public キー）はこのファイルの中に書き込む方式です。入力欄はありません。変更するときは GitHub の <code>index.html</code> を開き、ファイル後半（<code>「接続情報」</code>というコメントの付近）にある <code>SUPABASE_URL</code> と <code>SUPABASE_KEY</code> の2行を編集して保存してください（スマホのブラウザからも編集できます）。</p>
   <button class="act" id="cfgSave" style="margin-bottom:12px">再接続する</button>
-  <details><summary>初回のみ（画像機能の追加時も）：Supabase の SQL Editor で実行するSQL</summary>
+  <details><summary>初回のみ（機能の追加時も、毎回上から実行してOK）：Supabase の SQL Editor で実行するSQL</summary>
 <pre id="sql">create table if not exists materials (
   id bigint generated always as identity primary key,
   code text not null unique,      -- 管理番号2（材料）
@@ -88,6 +93,32 @@ drop policy if exists "all products" on products;
 create policy "all materials" on materials for all using (true) with check (true);
 create policy "all products" on products for all using (true) with check (true);
 
+-- 生産・出荷の履歴（在庫数は下のトリガーが自動で増減します）
+create table if not exists movements (
+  id bigint generated always as identity primary key,
+  product_id bigint not null references products(id) on delete cascade,
+  kind text not null check (kind in ('in','out')),   -- in=生産(＋) / out=出荷(−)
+  qty int not null check (qty > 0),
+  moved_on date not null default current_date,
+  created_at timestamptz default now()
+);
+alter table movements enable row level security;
+drop policy if exists "all movements" on movements;
+create policy "all movements" on movements for all using (true) with check (true);
+create or replace function apply_movement() returns trigger
+language plpgsql security definer set search_path = public as $$
+begin
+  if tg_op = 'INSERT' then
+    update products set qty = qty + case when new.kind = 'in' then new.qty else -new.qty end where id = new.product_id;
+  else
+    update products set qty = qty - case when old.kind = 'in' then old.qty else -old.qty end where id = old.product_id;
+  end if;
+  return null;
+end $$;
+drop trigger if exists trg_apply_movement on movements;
+create trigger trg_apply_movement after insert or delete on movements
+  for each row execute function apply_movement();
+
 -- 画像の保存先（公開バケット）
 insert into storage.buckets (id, name, public) values ('images_zaiko','images_zaiko',true)
   on conflict (id) do nothing;
@@ -95,32 +126,40 @@ drop policy if exists "images_zaiko read" on storage.objects;
 drop policy if exists "images_zaiko write" on storage.objects;
 create policy "images_zaiko read" on storage.objects for select using (bucket_id = 'images_zaiko');
 create policy "images_zaiko write" on storage.objects for insert with check (bucket_id = 'images_zaiko');</pre>
-    <p class="lead">このSQLは、キーを知っている人なら誰でも読み書き・画像の追加ができる設定です。画像は公開URLになります。個人用の簡易版として使い、公開リポジトリにキーを書き込まないでください（キーはこのブラウザにだけ保存されます）。</p>
+    <p class="lead">このSQLは、キーを知っている人なら誰でも読み書き・画像の追加ができる設定です。画像は公開URLになります。個人用の簡易版として使ってください。</p>
   </details>
 </section>
 
 <div id="app">
   <section id="viewP" hidden>
     <div class="panel"><div class="form">
+      <label>管理番号<input id="vCode" list="vCodes" autocomplete="off" placeholder="P-001"><datalist id="vCodes"></datalist></label>
+      <label>区分<select id="vKind"><option value="in">生産（＋）</option><option value="out">出荷（−）</option></select></label>
+      <label>数量<input id="vQty" type="number" min="1" value="1"></label>
+      <label>日付<input id="vDate" type="date"></label>
+      <button class="act" id="vAdd">記録する</button>
+    </div><p class="code" id="vHint"></p></div>
+    <div class="panel" id="pList"></div>
+    <div class="panel"><div class="code" style="margin-bottom:6px">生産・出荷の履歴（新しい日付が上・最新200件）</div><div id="vList"></div></div>
+    <details class="panel"><summary>＋ 商品を追加</summary><div class="form">
       <label>管理番号<input id="pCode" placeholder="P-001"></label>
       <label>商品名<input id="pName" placeholder="畳縁コースター"></label>
-      <label>作成数<input id="pQty" type="number" min="0" value="0"></label>
+      <label>最初の作成数<input id="pQty" type="number" min="0" value="0"></label>
       <label>主材料<select id="pMat"></select></label>
       <label>商品画像<input id="pFile" type="file" accept="image/*"></label>
       <button class="act" id="pAdd">商品を追加</button>
-    </div></div>
-    <div class="panel" id="pList"></div>
+    </div></details>
   </section>
 
   <section id="viewM" hidden>
-    <div class="panel"><div class="form">
+    <div class="panel" id="mList"></div>
+    <details class="panel"><summary>＋ 材料を追加</summary><div class="form">
       <label>管理番号2<input id="mCode" placeholder="M-001"></label>
       <label>材料名<input id="mName" placeholder="畳縁（紺）"></label>
       <label>残り<select id="mLevel"><option value="ok">有</option><option value="low">僅か</option><option value="none">無</option></select></label>
       <label>材料画像<input id="mFile" type="file" accept="image/*"></label>
       <button class="act" id="mAdd">材料を追加</button>
-    </div></div>
-    <div class="panel" id="mList"></div>
+    </div></details>
   </section>
 </div>
 </div>
@@ -129,10 +168,11 @@ create policy "images_zaiko write" on storage.objects for insert with check (buc
 (function(){
   // ▼ 「接続情報」（Supabase の Project Settings → API）。ここを書き換えます ▼
   var SUPABASE_URL='https://gbjydrrcgoovgiuidfxp.supabase.co';
-  var SUPABASE_KEY='sb_publishable_2MaHoX-lcwtbNxBP1eIAzA___zNnRFa';
+  var SUPABASE_KEY='ここに anon public キー（eyJ で始まる文字列）を貼り付け';
   // ▲ ここまで ▲
   var $=function(i){return document.getElementById(i)};
-  var db=null, mats=[], prods=[];
+  var db=null, mats=[], prods=[], mvs=[], editP=null, editM=null;
+  function today(){return new Date().toLocaleDateString('sv-SE')}
   var LV={ok:['有','b-ok'],low:['僅か','b-low'],none:['無','b-none']};
   function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]})}
   function say(t){$('msg').textContent=t||''}
@@ -172,36 +212,72 @@ create policy "images_zaiko write" on storage.objects for insert with check (buc
     var a=await db.from('materials').select('*').order('code');
     var b=await db.from('products').select('*').order('code');
     if(a.error||b.error){say('読み込めません。SQLを実行済みか、URLとキーを確認してください：'+((a.error||b.error).message));return false}
-    mats=a.data; prods=b.data; say(''); render(); return true;
+    var c=await db.from('movements').select('*').order('moved_on',{ascending:false}).order('id',{ascending:false}).limit(200);
+    if(c.error){say('履歴を読み込めません。設定タブのSQLを実行してください：'+c.error.message);return false}
+    mats=a.data; prods=b.data; mvs=c.data; say(''); render(); return true;
   }
+  function matOpts(sel){return '<option value="">（なし）</option>'+mats.map(function(m){return '<option value="'+m.id+'"'+(m.id===sel?' selected':'')+'>'+esc(m.code)+' '+esc(m.name)+'</option>'}).join('')}
   function render(){
-    $('pMat').innerHTML='<option value="">（なし）</option>'+mats.map(function(m){return '<option value="'+m.id+'">'+esc(m.code)+' '+esc(m.name)+'</option>'}).join('');
+    $('pMat').innerHTML=matOpts(null);
+    $('vCodes').innerHTML=prods.map(function(p){return '<option value="'+esc(p.code)+'">'+esc(p.name)+'</option>'}).join('');
     $('pList').innerHTML=prods.length?prods.map(function(p){
       var m=mats.find(function(x){return x.id===p.material_id});
+      if(p.id===editP) return '<div class="item">'+thumb(p.image_url,p.id)+'<div class="form" style="grid-column:2/-1">'+
+        '<label>管理番号<input data-f="code" value="'+esc(p.code)+'"></label><label>商品名<input data-f="name" value="'+esc(p.name)+'"></label>'+
+        '<label>主材料<select data-f="material_id">'+matOpts(p.material_id)+'</select></label>'+
+        '<div><button class="act" data-savep="'+p.id+'">保存</button> <button class="ghost" data-cancel="1">取消</button></div></div></div>';
       return '<div class="item">'+thumb(p.image_url,p.id)+'<div><div class="code">'+esc(p.code)+'</div><div class="name">'+esc(p.name)+'</div></div>'+
-        '<div class="qty"><button data-q="-1" data-id="'+p.id+'" aria-label="減らす">−</button><span>'+p.qty+'</span><button data-q="1" data-id="'+p.id+'" aria-label="増やす">＋</button></div>'+
+        '<div class="qty"><span>'+p.qty+'</span><small class="code">個</small></div>'+
         '<div class="mat">主材料：'+(m?esc(m.code)+' '+esc(m.name)+' '+badge(m.level):'未設定')+
-        ' <button class="ghost" data-delp="'+p.id+'">削除</button></div></div>';
-    }).join(''):'<div class="empty">商品がまだありません。上のフォームから追加してください。</div>';
+        ' <button class="ghost" data-editp="'+p.id+'">編集</button> <button class="ghost" data-delp="'+p.id+'">削除</button></div></div>';
+    }).join(''):'<div class="empty">商品がまだありません。下の「商品を追加」から登録してください。</div>';
+    $('vList').innerHTML=mvs.length?mvs.map(function(v){
+      var p=prods.find(function(x){return x.id===v.product_id})||{code:'?',name:''};
+      var inn=v.kind==='in';
+      return '<div class="mv"><span class="code">'+esc(v.moved_on)+'</span><span><b>'+esc(p.code)+'</b> '+esc(p.name)+'</span>'+
+        '<span class="badge '+(inn?'b-ok':'b-low')+'">'+(inn?'生産 ＋':'出荷 −')+v.qty+'</span><button class="ghost" data-delv="'+v.id+'">削除</button></div>';
+    }).join(''):'<div class="empty">まだ記録がありません。</div>';
     $('mList').innerHTML=mats.length?mats.map(function(m){
       var n=prods.filter(function(p){return p.material_id===m.id}).length;
+      if(m.id===editM) return '<div class="item">'+thumb(m.image_url,m.id)+'<div class="form" style="grid-column:2/-1">'+
+        '<label>管理番号2<input data-f="code" value="'+esc(m.code)+'"></label><label>材料名<input data-f="name" value="'+esc(m.name)+'"></label>'+
+        '<label>残り<select data-f="level">'+Object.keys(LV).map(function(k){return '<option value="'+k+'"'+(m.level===k?' selected':'')+'>'+LV[k][0]+'</option>'}).join('')+'</select></label>'+
+        '<div><button class="act" data-savem="'+m.id+'">保存</button> <button class="ghost" data-cancel="1">取消</button></div></div></div>';
       return '<div class="item">'+thumb(m.image_url,m.id)+'<div><div class="code">'+esc(m.code)+'</div><div class="name">'+esc(m.name)+'</div></div>'+
         '<div><select data-lv="'+m.id+'" aria-label="残り">'+Object.keys(LV).map(function(k){return '<option value="'+k+'"'+(m.level===k?' selected':'')+'>'+LV[k][0]+'</option>'}).join('')+'</select></div>'+
-        '<div class="mat">使用中の商品：'+n+'件 <button class="ghost" data-delm="'+m.id+'">削除</button></div></div>';
-    }).join(''):'<div class="empty">材料がまだありません。上のフォームから追加してください。</div>';
+        '<div class="mat">使用中の商品：'+n+'件 <button class="ghost" data-editm="'+m.id+'">編集</button> <button class="ghost" data-delm="'+m.id+'">削除</button></div></div>';
+    }).join(''):'<div class="empty">材料がまだありません。下の「材料を追加」から登録してください。</div>';
+    hint();
+  }
+  function hint(){
+    var c=$('vCode').value.trim(), p=prods.find(function(x){return x.code===c});
+    $('vHint').textContent=p?p.name+'（現在 '+p.qty+' 個）':(c?'該当する管理番号がありません':'');
   }
   async function run(q){var r=await q; if(r.error){say('保存できません：'+r.error.message);return false} return load()}
+  function fields(t){var o={};t.closest('.item').querySelectorAll('[data-f]').forEach(function(i){o[i.dataset.f]=i.value.trim()});return o}
 
   $('cfgSave').onclick=connect;
   $('tabP').onclick=function(){show('P')};
   $('tabM').onclick=function(){show('M')};
   $('tabS').onclick=function(){show('S')};
+  $('vDate').value=today();
+  $('vCode').oninput=hint;
+  $('vAdd').onclick=async function(){
+    var p=prods.find(function(x){return x.code===$('vCode').value.trim()}), q=parseInt($('vQty').value,10), k=$('vKind').value;
+    if(!p){say('その管理番号の商品がありません。');return}
+    if(!(q>0)){say('数量は1以上を入力してください。');return}
+    if(k==='out'&&q>p.qty){say('在庫（'+p.qty+'個）を超える出荷はできません。');return}
+    var ok=await run(db.from('movements').insert({product_id:p.id,kind:k,qty:q,moved_on:$('vDate').value||today()}));
+    if(ok){$('vQty').value=1;$('vCode').value='';hint()}
+  };
   $('pAdd').onclick=async function(){
-    var c=$('pCode').value.trim(), n=$('pName').value.trim(), f=$('pFile').files[0], img=null;
+    var c=$('pCode').value.trim(), n=$('pName').value.trim(), f=$('pFile').files[0], img=null, q=parseInt($('pQty').value,10)||0;
     if(!c||!n){say('管理番号と商品名を入力してください。');return}
     if(f){img=await up(f,'products'); if(!img)return}
-    var ok=await run(db.from('products').insert({code:c,name:n,qty:parseInt($('pQty').value,10)||0,material_id:$('pMat').value?Number($('pMat').value):null,image_url:img}));
-    if(ok){$('pCode').value='';$('pName').value='';$('pQty').value=0;$('pFile').value=''}
+    var r=await db.from('products').insert({code:c,name:n,qty:0,material_id:$('pMat').value?Number($('pMat').value):null,image_url:img}).select('id').single();
+    if(r.error){say('保存できません：'+r.error.message);return}
+    if(q>0){var r2=await db.from('movements').insert({product_id:r.data.id,kind:'in',qty:q,moved_on:today()}); if(r2.error)say('最初の作成数を記録できません：'+r2.error.message)}
+    await load(); $('pCode').value='';$('pName').value='';$('pQty').value=0;$('pFile').value='';
   };
   $('mAdd').onclick=async function(){
     var c=$('mCode').value.trim(), n=$('mName').value.trim(), f=$('mFile').files[0], img=null;
@@ -215,14 +291,29 @@ create policy "images_zaiko write" on storage.objects for insert with check (buc
     var u=await up(t.files[0],dir); if(u) run(db.from(table).update({image_url:u}).eq('id',t.dataset.img));
   }
   $('pList').onchange=function(e){swap(e,'products','products')};
-  $('pList').onclick=function(e){
-    var t=e.target;
-    if(t.dataset.q){var p=prods.find(function(x){return x.id==t.dataset.id});run(db.from('products').update({qty:Math.max(0,p.qty+Number(t.dataset.q))}).eq('id',p.id))}
-    if(t.dataset.delp&&confirm('この商品を削除しますか？')) run(db.from('products').delete().eq('id',t.dataset.delp));
+  $('pList').onclick=async function(e){
+    var d=e.target.dataset, f;
+    if(d.editp){editP=Number(d.editp);render()}
+    else if(d.cancel){editP=null;render()}
+    else if(d.savep){
+      f=fields(e.target); if(!f.code||!f.name){say('管理番号と商品名を入力してください。');return}
+      if(await run(db.from('products').update({code:f.code,name:f.name,material_id:f.material_id?Number(f.material_id):null}).eq('id',d.savep))){editP=null;render()}
+    }
+    else if(d.delp&&confirm('この商品を削除しますか？（生産・出荷の履歴も消えます）')) run(db.from('products').delete().eq('id',d.delp));
   };
-  $('mList').onclick=function(e){
-    var t=e.target;
-    if(t.dataset.delm&&confirm('この材料を削除しますか？（商品の主材料は未設定になります）')) run(db.from('materials').delete().eq('id',t.dataset.delm));
+  $('vList').onclick=function(e){
+    var d=e.target.dataset;
+    if(d.delv&&confirm('この記録を削除しますか？（在庫数は元に戻ります）')) run(db.from('movements').delete().eq('id',d.delv));
+  };
+  $('mList').onclick=async function(e){
+    var d=e.target.dataset, f;
+    if(d.editm){editM=Number(d.editm);render()}
+    else if(d.cancel){editM=null;render()}
+    else if(d.savem){
+      f=fields(e.target); if(!f.code||!f.name){say('管理番号2と材料名を入力してください。');return}
+      if(await run(db.from('materials').update({code:f.code,name:f.name,level:f.level}).eq('id',d.savem))){editM=null;render()}
+    }
+    else if(d.delm&&confirm('この材料を削除しますか？（商品の主材料は未設定になります）')) run(db.from('materials').delete().eq('id',d.delm));
   };
   $('mList').onchange=function(e){
     if(e.target.dataset.lv) run(db.from('materials').update({level:e.target.value}).eq('id',e.target.dataset.lv));
