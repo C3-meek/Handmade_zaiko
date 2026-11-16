@@ -18,6 +18,7 @@ h1{font-size:1.5rem;margin:0 0 4px;letter-spacing:.04em;border-left:8px solid va
 .panel{background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:14px;margin-bottom:16px}
 .tabs{display:flex;gap:6px;margin-bottom:12px}
 .tabs button{flex:1;padding:10px;border:1px solid var(--line);background:var(--panel);color:var(--ink);border-radius:6px;font-size:1rem;cursor:pointer}
+.tabs button:disabled{opacity:.45;cursor:not-allowed}
 .tabs button[aria-selected=true]{background:var(--accent);color:var(--bg);border-color:var(--accent)}
 input,select{font:inherit;padding:8px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--ink);min-width:0}
 button.act{font:inherit;padding:8px 14px;border:0;border-radius:6px;background:var(--accent);color:var(--bg);cursor:pointer}
@@ -38,7 +39,7 @@ button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid 
 .badge{display:inline-block;padding:1px 10px;border-radius:99px;font-weight:700;font-size:.85rem}
 .b-ok{background:var(--okbg);color:var(--ok)}.b-low{background:var(--lowbg);color:var(--low)}.b-none{background:var(--nonebg);color:var(--none)}.b-unk{background:var(--line);color:var(--sub)}
 .empty{color:var(--sub);padding:16px 0;text-align:center}
-#msg{min-height:1.4em;color:var(--none);font-size:.88rem;margin:6px 0 0}
+#msg{min-height:1.4em;color:var(--none);font-size:.88rem;margin:0 0 10px}
 pre{overflow-x:auto;background:var(--bg);padding:10px;border-radius:6px;font-size:.78rem;border:1px solid var(--line)}
 details summary{cursor:pointer;color:var(--sub)}
 [hidden]{display:none!important}
@@ -49,13 +50,19 @@ details summary{cursor:pointer;color:var(--sub)}
 <h1>ハンドメイド在庫帳</h1>
 <p class="lead">作った商品の数と、元になる材料の残りを一覧で確認できます。</p>
 
-<section class="panel" id="cfgPanel">
+<div class="tabs" role="tablist">
+  <button role="tab" id="tabP" aria-selected="false" disabled>商品</button>
+  <button role="tab" id="tabM" aria-selected="false" disabled>材料</button>
+  <button role="tab" id="tabS" aria-selected="true">設定</button>
+</div>
+<p id="msg" role="status"></p>
+
+<section class="panel" id="viewS">
   <div class="form">
     <label>Supabase の Project URL<input id="cfgUrl" placeholder="https://xxxx.supabase.co" autocomplete="off"></label>
     <label>anon public キー<input id="cfgKey" placeholder="eyJ..." autocomplete="off"></label>
     <button class="act" id="cfgSave">接続して保存</button>
   </div>
-  <p id="msg" role="status"></p>
   <details><summary>初回のみ（画像機能の追加時も）：Supabase の SQL Editor で実行するSQL</summary>
 <pre id="sql">create table if not exists materials (
   id bigint generated always as identity primary key,
@@ -94,13 +101,8 @@ create policy "images_zaiko write" on storage.objects for insert with check (buc
   </details>
 </section>
 
-<div id="app" hidden>
-  <div class="tabs" role="tablist">
-    <button role="tab" id="tabP" aria-selected="true">商品</button>
-    <button role="tab" id="tabM" aria-selected="false">材料</button>
-  </div>
-
-  <section id="viewP">
+<div id="app">
+  <section id="viewP" hidden>
     <div class="panel"><div class="form">
       <label>管理番号<input id="pCode" placeholder="P-001"></label>
       <label>商品名<input id="pName" placeholder="畳縁コースター"></label>
@@ -146,12 +148,20 @@ create policy "images_zaiko write" on storage.objects for insert with check (buc
   }
   function badge(l){var x=LV[l];return x?'<span class="badge '+x[1]+'">'+x[0]+'</span>':'<span class="badge b-unk">未設定</span>'}
 
+  function show(n){
+    ['P','M','S'].forEach(function(k){
+      $('view'+k).hidden=(k!==n);
+      $('tab'+k).setAttribute('aria-selected',k===n);
+    });
+  }
   function connect(){
     var u=$('cfgUrl').value.trim(), k=$('cfgKey').value.trim();
     if(!u||!k){say('URLとキーを入力してください。');return}
+    if(!/^https:\/\//.test(u)){say('URLは「https://」で始まる Project URL を入れてください（postgresql:// で始まる接続文字列ではありません）。');return}
+    u=u.replace(/\/+$/,'');
     try{ db=supabase.createClient(u,k) }catch(e){say('接続設定が正しくありません。');return}
     store('sb_url',u); store('sb_key',k);
-    load().then(function(ok){ if(ok){ $('app').hidden=false; $('cfgPanel').querySelector('details').open=false } });
+    load().then(function(ok){ $('tabP').disabled=$('tabM').disabled=!ok; show(ok?'P':'S') });
   }
   async function load(){
     var a=await db.from('materials').select('*').order('code');
@@ -178,11 +188,9 @@ create policy "images_zaiko write" on storage.objects for insert with check (buc
   async function run(q){var r=await q; if(r.error){say('保存できません：'+r.error.message);return false} return load()}
 
   $('cfgSave').onclick=connect;
-  $('tabP').onclick=$('tabM').onclick=function(e){
-    var p=e.target.id==='tabP';
-    $('tabP').setAttribute('aria-selected',p);$('tabM').setAttribute('aria-selected',!p);
-    $('viewP').hidden=!p;$('viewM').hidden=p;
-  };
+  $('tabP').onclick=function(){show('P')};
+  $('tabM').onclick=function(){show('M')};
+  $('tabS').onclick=function(){show('S')};
   $('pAdd').onclick=async function(){
     var c=$('pCode').value.trim(), n=$('pName').value.trim(), f=$('pFile').files[0], img=null;
     if(!c||!n){say('管理番号と商品名を入力してください。');return}
