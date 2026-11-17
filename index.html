@@ -1,4 +1,4 @@
-<!-- 構造：<!DOCTYPE html>〜</html> まで（head/style → body(header, 設定タブ(接続状態+SQL), タブ, 商品(生産・出荷記録/一覧/履歴/追加), 材料(一覧/追加)) → script。接続情報は script 冒頭の SUPABASE_URL / SUPABASE_KEY に記入。画像は Supabase Storage の images_zaiko バケットに保存） -->
+<!-- 構造：<!DOCTYPE html>〜</html> まで（head/style → body(header, 設定タブ(接続状態+SQL), タブ, 商品(生産・出荷記録/一覧[各商品に履歴トグル]/追加), 材料(一覧/追加)) → script。接続情報は script 冒頭の SUPABASE_URL / SUPABASE_KEY に記入。画像は Supabase Storage の images_zaiko バケットに保存） -->
 <!DOCTYPE html>
 <html lang="ja">
 <head>
@@ -42,8 +42,11 @@ button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid 
 #msg{min-height:1.4em;color:var(--none);font-size:.88rem;margin:0 0 10px}
 pre{overflow-x:auto;background:var(--bg);padding:10px;border-radius:6px;font-size:.78rem;border:1px solid var(--line)}
 details summary{cursor:pointer;color:var(--sub)}
-.mv{display:grid;grid-template-columns:86px 1fr auto auto;gap:8px;align-items:center;padding:8px 0;border-top:1px solid var(--line);font-size:.9rem}
+.hist{grid-column:1/-1;border-top:1px dashed var(--line);padding-top:6px}
+.hist summary{cursor:pointer;color:var(--sub);font-size:.85rem}
+.mv{display:grid;grid-template-columns:96px 1fr auto;gap:8px;align-items:center;padding:8px 0;border-top:1px solid var(--line);font-size:.9rem}
 .mv:first-child{border-top:0}
+.mv .badge{justify-self:start}
 details.panel>summary{cursor:pointer;font-weight:700;color:var(--accent)}
 details.panel[open]>summary{margin-bottom:10px}
 #vHint{min-height:1.3em;margin:8px 0 0}
@@ -140,7 +143,6 @@ create policy "images_zaiko write" on storage.objects for insert with check (buc
       <button class="act" id="vAdd">記録する</button>
     </div><p class="code" id="vHint"></p></div>
     <div class="panel" id="pList"></div>
-    <div class="panel"><div class="code" style="margin-bottom:6px">生産・出荷の履歴（新しい日付が上・最新200件）</div><div id="vList"></div></div>
     <details class="panel"><summary>＋ 商品を追加</summary><div class="form">
       <label>管理番号<input id="pCode" placeholder="P-001"></label>
       <label>商品名<input id="pName" placeholder="畳縁コースター"></label>
@@ -171,7 +173,7 @@ create policy "images_zaiko write" on storage.objects for insert with check (buc
   var SUPABASE_KEY='sb_publishable_2MaHoX-lcwtbNxBP1eIAzA___zNnRFa';
   // ▲ ここまで ▲
   var $=function(i){return document.getElementById(i)};
-  var db=null, mats=[], prods=[], mvs=[], editP=null, editM=null;
+  var db=null, mats=[], prods=[], mvs=[], editP=null, editM=null, openH={};
   function today(){return new Date().toLocaleDateString('sv-SE')}
   var LV={ok:['有','b-ok'],low:['僅か','b-low'],none:['無','b-none']};
   function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]})}
@@ -212,7 +214,7 @@ create policy "images_zaiko write" on storage.objects for insert with check (buc
     var a=await db.from('materials').select('*').order('code');
     var b=await db.from('products').select('*').order('code');
     if(a.error||b.error){say('読み込めません。SQLを実行済みか、URLとキーを確認してください：'+((a.error||b.error).message));return false}
-    var c=await db.from('movements').select('*').order('moved_on',{ascending:false}).order('id',{ascending:false}).limit(200);
+    var c=await db.from('movements').select('*').order('moved_on',{ascending:false}).order('id',{ascending:false}).limit(1000);
     if(c.error){say('履歴を読み込めません。設定タブのSQLを実行してください：'+c.error.message);return false}
     mats=a.data; prods=b.data; mvs=c.data; say(''); render(); return true;
   }
@@ -229,14 +231,8 @@ create policy "images_zaiko write" on storage.objects for insert with check (buc
       return '<div class="item">'+thumb(p.image_url,p.id)+'<div><div class="code">'+esc(p.code)+'</div><div class="name">'+esc(p.name)+'</div></div>'+
         '<div class="qty"><span>'+p.qty+'</span><small class="code">個</small></div>'+
         '<div class="mat">主材料：'+(m?esc(m.code)+' '+esc(m.name)+' '+badge(m.level):'未設定')+
-        ' <button class="ghost" data-editp="'+p.id+'">編集</button> <button class="ghost" data-delp="'+p.id+'">削除</button></div></div>';
+        ' <button class="ghost" data-editp="'+p.id+'">編集</button> <button class="ghost" data-delp="'+p.id+'">削除</button></div>'+histHtml(p)+'</div>';
     }).join(''):'<div class="empty">商品がまだありません。下の「商品を追加」から登録してください。</div>';
-    $('vList').innerHTML=mvs.length?mvs.map(function(v){
-      var p=prods.find(function(x){return x.id===v.product_id})||{code:'?',name:''};
-      var inn=v.kind==='in';
-      return '<div class="mv"><span class="code">'+esc(v.moved_on)+'</span><span><b>'+esc(p.code)+'</b> '+esc(p.name)+'</span>'+
-        '<span class="badge '+(inn?'b-ok':'b-low')+'">'+(inn?'生産 ＋':'出荷 −')+v.qty+'</span><button class="ghost" data-delv="'+v.id+'">削除</button></div>';
-    }).join(''):'<div class="empty">まだ記録がありません。</div>';
     $('mList').innerHTML=mats.length?mats.map(function(m){
       var n=prods.filter(function(p){return p.material_id===m.id}).length;
       if(m.id===editM) return '<div class="item">'+thumb(m.image_url,m.id)+'<div class="form" style="grid-column:2/-1">'+
@@ -248,6 +244,12 @@ create policy "images_zaiko write" on storage.objects for insert with check (buc
         '<div class="mat">使用中の商品：'+n+'件 <button class="ghost" data-editm="'+m.id+'">編集</button> <button class="ghost" data-delm="'+m.id+'">削除</button></div></div>';
     }).join(''):'<div class="empty">材料がまだありません。下の「材料を追加」から登録してください。</div>';
     hint();
+  }
+  function histHtml(p){
+    var l=mvs.filter(function(v){return v.product_id===p.id});
+    return '<details class="hist" data-h="'+p.id+'"'+(openH[p.id]?' open':'')+'><summary>生産・出荷の履歴（'+l.length+'件・新しい順）</summary>'+
+      (l.length?l.map(function(v){var inn=v.kind==='in';
+        return '<div class="mv"><span class="code">'+esc(v.moved_on)+'</span><span class="badge '+(inn?'b-ok':'b-low')+'">'+(inn?'生産 ＋':'出荷 −')+v.qty+'</span><button class="ghost" data-delv="'+v.id+'">削除</button></div>'}).join(''):'<div class="empty">まだ記録がありません。</div>')+'</details>';
   }
   function hint(){
     var c=$('vCode').value.trim(), p=prods.find(function(x){return x.code===c});
@@ -290,6 +292,7 @@ create policy "images_zaiko write" on storage.objects for insert with check (buc
     var t=e.target; if(!t.dataset.img||!t.files[0])return;
     var u=await up(t.files[0],dir); if(u) run(db.from(table).update({image_url:u}).eq('id',t.dataset.img));
   }
+  $('pList').addEventListener('toggle',function(e){var h=e.target.dataset&&e.target.dataset.h; if(h)openH[h]=e.target.open},true);
   $('pList').onchange=function(e){swap(e,'products','products')};
   $('pList').onclick=async function(e){
     var d=e.target.dataset, f;
@@ -299,11 +302,8 @@ create policy "images_zaiko write" on storage.objects for insert with check (buc
       f=fields(e.target); if(!f.code||!f.name){say('管理番号と商品名を入力してください。');return}
       if(await run(db.from('products').update({code:f.code,name:f.name,material_id:f.material_id?Number(f.material_id):null}).eq('id',d.savep))){editP=null;render()}
     }
+    else if(d.delv){if(confirm('この記録を削除しますか？（在庫数は元に戻ります）')) run(db.from('movements').delete().eq('id',d.delv))}
     else if(d.delp&&confirm('この商品を削除しますか？（生産・出荷の履歴も消えます）')) run(db.from('products').delete().eq('id',d.delp));
-  };
-  $('vList').onclick=function(e){
-    var d=e.target.dataset;
-    if(d.delv&&confirm('この記録を削除しますか？（在庫数は元に戻ります）')) run(db.from('movements').delete().eq('id',d.delv));
   };
   $('mList').onclick=async function(e){
     var d=e.target.dataset, f;
