@@ -21,6 +21,7 @@ h1{font-size:1.5rem;margin:0 0 4px;letter-spacing:.04em;border-left:8px solid va
 .tabs button:disabled{opacity:.45;cursor:not-allowed}
 .tabs button[aria-selected=true]{background:var(--accent);color:var(--bg);border-color:var(--accent)}
 input,select{font:inherit;padding:8px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--ink);min-width:0}
+a{color:var(--accent)}
 button.act{font:inherit;padding:8px 14px;border:0;border-radius:6px;background:var(--accent);color:var(--bg);cursor:pointer}
 button.ghost{font:inherit;padding:4px 10px;border:1px solid var(--line);border-radius:6px;background:transparent;color:var(--sub);cursor:pointer}
 button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
@@ -87,6 +88,7 @@ create table if not exists products (
 );
 -- 画像用の列（前回のSQLを実行済みの方もここから実行できます）
 alter table materials add column if not exists image_url text;
+alter table materials add column if not exists source_url text;   -- 材料の引用先URL
 alter table products add column if not exists image_url text;
 
 alter table materials enable row level security;
@@ -159,6 +161,7 @@ create policy "images_zaiko write" on storage.objects for insert with check (buc
       <label>管理番号2<input id="mCode" placeholder="M-001"></label>
       <label>材料名<input id="mName" placeholder="畳縁（紺）"></label>
       <label>残り<select id="mLevel"><option value="ok">有</option><option value="low">僅か</option><option value="none">無</option></select></label>
+      <label>引用先URL<input id="mUrl" type="url" placeholder="https://..."></label>
       <label>材料画像<input id="mFile" type="file" accept="image/*"></label>
       <button class="act" id="mAdd">材料を追加</button>
     </div></details>
@@ -170,7 +173,7 @@ create policy "images_zaiko write" on storage.objects for insert with check (buc
 (function(){
   // ▼ 「接続情報」（Supabase の Project Settings → API）。ここを書き換えます ▼
   var SUPABASE_URL='https://gbjydrrcgoovgiuidfxp.supabase.co';
-  var SUPABASE_KEY='sb_publishable_2MaHoX-lcwtbNxBP1eIAzA___zNnRFa';
+  var SUPABASE_KEY='ここに anon public キー（eyJ で始まる文字列）を貼り付け';
   // ▲ ここまで ▲
   var $=function(i){return document.getElementById(i)};
   var db=null, mats=[], prods=[], mvs=[], editP=null, editM=null, openH={};
@@ -189,6 +192,7 @@ create policy "images_zaiko write" on storage.objects for insert with check (buc
       say('');return db.storage.from('images_zaiko').getPublicUrl(path).data.publicUrl;
     }catch(e){say('この画像は読み込めません。別の画像を選んでください。');return null}
   }
+  function safeUrl(u){u=(u||'').trim();return /^https?:\/\//i.test(u)?u:''}
   function badge(l){var x=LV[l];return x?'<span class="badge '+x[1]+'">'+x[0]+'</span>':'<span class="badge b-unk">未設定</span>'}
 
   function show(n){
@@ -237,11 +241,12 @@ create policy "images_zaiko write" on storage.objects for insert with check (buc
       var n=prods.filter(function(p){return p.material_id===m.id}).length;
       if(m.id===editM) return '<div class="item">'+thumb(m.image_url,m.id)+'<div class="form" style="grid-column:2/-1">'+
         '<label>管理番号2<input data-f="code" value="'+esc(m.code)+'"></label><label>材料名<input data-f="name" value="'+esc(m.name)+'"></label>'+
+        '<label>引用先URL<input data-f="source_url" type="url" value="'+esc(m.source_url||'')+'" placeholder="https://..."></label>'+
         '<label>残り<select data-f="level">'+Object.keys(LV).map(function(k){return '<option value="'+k+'"'+(m.level===k?' selected':'')+'>'+LV[k][0]+'</option>'}).join('')+'</select></label>'+
         '<div><button class="act" data-savem="'+m.id+'">保存</button> <button class="ghost" data-cancel="1">取消</button></div></div></div>';
       return '<div class="item">'+thumb(m.image_url,m.id)+'<div><div class="code">'+esc(m.code)+'</div><div class="name">'+esc(m.name)+'</div></div>'+
         '<div><select data-lv="'+m.id+'" aria-label="残り">'+Object.keys(LV).map(function(k){return '<option value="'+k+'"'+(m.level===k?' selected':'')+'>'+LV[k][0]+'</option>'}).join('')+'</select></div>'+
-        '<div class="mat">使用中の商品：'+n+'件 <button class="ghost" data-editm="'+m.id+'">編集</button> <button class="ghost" data-delm="'+m.id+'">削除</button></div></div>';
+        '<div class="mat">使用中の商品：'+n+'件 '+(safeUrl(m.source_url)?'<a href="'+esc(safeUrl(m.source_url))+'" target="_blank" rel="noopener noreferrer">引用先を開く</a> ':'')+'<button class="ghost" data-editm="'+m.id+'">編集</button> <button class="ghost" data-delm="'+m.id+'">削除</button></div></div>';
     }).join(''):'<div class="empty">材料がまだありません。下の「材料を追加」から登録してください。</div>';
     hint();
   }
@@ -282,11 +287,12 @@ create policy "images_zaiko write" on storage.objects for insert with check (buc
     await load(); $('pCode').value='';$('pName').value='';$('pQty').value=0;$('pFile').value='';
   };
   $('mAdd').onclick=async function(){
-    var c=$('mCode').value.trim(), n=$('mName').value.trim(), f=$('mFile').files[0], img=null;
+    var c=$('mCode').value.trim(), n=$('mName').value.trim(), f=$('mFile').files[0], img=null, su=$('mUrl').value.trim();
     if(!c||!n){say('管理番号2と材料名を入力してください。');return}
+    if(su&&!safeUrl(su)){say('引用先URLは http:// または https:// で始まる形式で入力してください。');return}
     if(f){img=await up(f,'materials'); if(!img)return}
-    var ok=await run(db.from('materials').insert({code:c,name:n,level:$('mLevel').value,image_url:img}));
-    if(ok){$('mCode').value='';$('mName').value='';$('mFile').value=''}
+    var ok=await run(db.from('materials').insert({code:c,name:n,level:$('mLevel').value,image_url:img,source_url:su||null}));
+    if(ok){$('mCode').value='';$('mName').value='';$('mUrl').value='';$('mFile').value=''}
   };
   async function swap(e,table,dir){
     var t=e.target; if(!t.dataset.img||!t.files[0])return;
@@ -311,7 +317,8 @@ create policy "images_zaiko write" on storage.objects for insert with check (buc
     else if(d.cancel){editM=null;render()}
     else if(d.savem){
       f=fields(e.target); if(!f.code||!f.name){say('管理番号2と材料名を入力してください。');return}
-      if(await run(db.from('materials').update({code:f.code,name:f.name,level:f.level}).eq('id',d.savem))){editM=null;render()}
+      if(f.source_url&&!safeUrl(f.source_url)){say('引用先URLは http:// または https:// で始まる形式で入力してください。');return}
+      if(await run(db.from('materials').update({code:f.code,name:f.name,level:f.level,source_url:f.source_url||null}).eq('id',d.savem))){editM=null;render()}
     }
     else if(d.delm&&confirm('この材料を削除しますか？（商品の主材料は未設定になります）')) run(db.from('materials').delete().eq('id',d.delm));
   };
